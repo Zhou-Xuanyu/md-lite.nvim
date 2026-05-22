@@ -1,61 +1,62 @@
 local ns = vim.api.nvim_create_namespace("md_lite")
 
--- Recursively renders ordered list items starting at `start` (1-based) in `lines`.
+-- Recursively renders ordered list items starting at `start` (1-based).
 --
--- Each call owns one indentation level (`indent_offset`). It walks forward
--- through lines and handles three cases:
+-- Before matching, strip `indent_offset * indent_size` characters from the
+-- line so it looks top-level to this call. After stripping:
 --
---   1. Not a list item         → reset count, advance
---   2. indent_level == offset  → base case: number this item, advance
---   3. indent_level >  offset  → recurse one level deeper; resume where it stopped
---
--- When the call encounters a line whose indent_level is shallower than its
--- own offset, that line belongs to an ancestor — return `i` without consuming
--- it so the parent can process it.
+--   indent == nil   → not a list item (or shallower line stripped to garbage):
+--                     at depth 0 just reset and advance; at depth >0 return
+--                     so the parent can re-process the line with its own prefix
+--   #indent == 0    → base case: item belongs to our level, assign next number
+--   #indent >  0    → recursive case: still has indent, go one level deeper
 --
 -- Returns the index of the first line it did NOT consume.
-local function render_block(buf, lines, start, indent_offset, cursor_line, unit_size)
+local function render_block(buf, lines, start, indent_offset, cursor_line, indent_size)
     local count = 0
-    local i = start
+    local line_index = start
+    -- number of characters to strip = levels * spaces-per-level
+    local strip = indent_offset * indent_size
 
-    while i <= #lines do
-        local line = lines[i]
-        -- capture leading whitespace only when followed by "N. " (ordered list item)
+    while line_index <= #lines do
+        local line = lines[line_index]
+        -- strip the expected prefix for this level; leaves garbage if line is shallower
+        line = line:sub(strip + 1)
+
+        --   ^     = anchor to start of stripped line
+        --   (%s*) = capture any remaining indentation
+        --   %d+   = one or more digits
+        --   %.    = literal dot
+        --   %s    = space after dot
         local indent = line:match("^(%s*)%d+%.%s")
 
         if indent == nil then
-            -- not a list item at any level — reset count for this level and move on
+            -- either not a list item, or a shallower line whose prefix was stripped to garbage
             count = 0
-            i = i + 1
-        else
-            -- number of indent levels = leading spaces / spaces-per-level
-            local indent_level = math.floor(#indent / unit_size)
-
-            if indent_level < indent_offset then
-                -- this line belongs to a shallower level — stop and let the caller handle it
-                return i
-            elseif indent_level == indent_offset then
-                -- base case: item belongs to our level, assign the next sequential number
-                count = count + 1
-                -- skip overlay on cursor line so raw markdown stays visible while editing
-                if i ~= cursor_line then
-                    vim.api.nvim_buf_set_extmark(buf, ns, i - 1, #indent, {
-                        virt_text = { { count .. ".", "@markup.list" } },
-                        virt_text_pos = "overlay",
-                    })
-                end
-                i = i + 1
-            else
-                -- recursive case: item is deeper than our level
-                -- hand off to a new call at indent_offset + 1
-                -- that call will return the index of the first line it couldn't handle
-                -- (i.e. where indentation went back up), and we resume from there
-                i = render_block(buf, lines, i, indent_offset + 1, cursor_line, unit_size)
+            if indent_offset > 0 then
+                -- let the parent re-process this line at the correct level
+                return line_index
             end
+            line_index = line_index + 1
+        elseif #indent == 0 then
+            -- base case: no remaining indent after stripping — item belongs to our level
+            count = count + 1
+            if line_index ~= cursor_line then
+                -- column in the original line = the characters we stripped
+                vim.api.nvim_buf_set_extmark(buf, ns, line_index - 1, strip, {
+                    virt_text = { { count .. ".", "@markup.list" } },
+                    virt_text_pos = "overlay",
+                })
+            end
+            line_index = line_index + 1
+        else
+            -- recursive case: still has indentation after stripping, go one level deeper
+            -- resume from wherever the deeper call stopped
+            line_index = render_block(buf, lines, line_index, indent_offset + 1, cursor_line, indent_size)
         end
     end
 
-    return i
+    return line_index
 end
 
 local function render(buf)
@@ -63,14 +64,24 @@ local function render(buf)
     local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
     local cursor_line = vim.api.nvim_win_get_cursor(0)[1]
 
-    -- resolve indent unit from buffer settings:
-    -- shiftwidth=0 means "use tabstop"; for hard tabs each tab char = one level
-    local sw = vim.bo[buf].shiftwidth
-    if sw == 0 then sw = vim.bo[buf].tabstop end
-    local unit_size = vim.bo[buf].expandtab and sw or 1
+    -- indent_size is how many characters wide one indent level is.
+    --
+    -- expandtab=true  means the user indents with spaces, so one level = shiftwidth spaces.
+    -- expandtab=false means the user indents with tab characters, so one level = 1 tab char.
+    --
+    -- shiftwidth=0 is a special Vim value meaning "same as tabstop", so we resolve
+    -- it to tabstop before using it.
+    local shiftwidth = vim.bo[buf].shiftwidth
+    if shiftwidth == 0 then shiftwidth = vim.bo[buf].tabstop end
+    local indent_size
+    if vim.bo[buf].expandtab then
+        indent_size = shiftwidth  -- e.g. 2 or 4 spaces per level
+    else
+        indent_size = 1           -- one tab character per level
+    end
 
     -- kick off at line 1, indent level 0 (no indentation = top level)
-    render_block(buf, lines, 1, 0, cursor_line, unit_size)
+    render_block(buf, lines, 1, 0, cursor_line, indent_size)
 end
 
 return { render = render }
