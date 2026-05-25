@@ -15,9 +15,10 @@ local function render_list(buf, lines, cursor_line)
                 counts[offset] = counts[offset] + 1
             end
 
-            if i ~= cursor_line - 1 then
+            -- cursor_line 1 based
+            if i ~= cursor_line then
                 local count = counts[offset]
-                -- local count = i
+                -- nvim api 0 based
                 vim.api.nvim_buf_set_extmark(buf, ns, i - 1, offset, {
                     virt_text = { { count .. ".", "@markup.list" } },
                     virt_text_pos = "overlay",
