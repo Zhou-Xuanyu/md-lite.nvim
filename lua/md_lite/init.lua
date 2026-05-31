@@ -15,6 +15,11 @@ local function render_list(buf, lines, cursor_line)
                 counts[offset] = counts[offset] + 1
             end
 
+            -- clear inner count whenever outer increment
+            for k in pairs(counts) do
+                if k > offset then counts[k] = nil end
+            end
+
             -- cursor_line 1 based
             if i ~= cursor_line then
                 local count = counts[offset]
