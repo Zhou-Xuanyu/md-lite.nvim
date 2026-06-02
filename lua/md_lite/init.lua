@@ -5,7 +5,7 @@ local function render_list(buf, lines, cursor_line)
     local counts = {}
     while i <= #lines do
         local line = lines[i]
-        local spaces = line:match("^(%s*)%d+%.")
+        local spaces = line:match("^(%s*)%d+%.%s")
 
         if spaces ~= nil then
             local offset = #spaces
